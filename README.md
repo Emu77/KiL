@@ -1,4 +1,3 @@
-es
 
 
 # 📱 Kugel im Labyrinth
@@ -23,7 +22,9 @@ Dateiname:
 
 Das Spiel läuft ohne Internetverbindung und ohne weitere Installation.
 
----
+
+![Start](screenshots/start.png)
+
 
 ## Spielprinzip & Anleitung
 
@@ -39,7 +40,9 @@ ohne in eines der Löcher zu fallen.
   - links / rechts → Kugel bewegt sich horizontal
 - Die Stärke der Bewegung hängt von der Neigung des Geräts ab.
 
----
+
+![Game](screenshots/game.png)
+
 
 ### Schwierigkeitsgrade
 Vor dem Start kann ein Schwierigkeitsgrad gewählt werden:
@@ -100,7 +103,9 @@ Daraufhin wurden:
 - der Hard-Modus deutlich verschärft
 - Löcher spielmechanisch relevanter gemacht
 
----
+
+![Ende](screenshots/gameover.png)
+
 
 ## Technik
 
@@ -121,3 +126,4 @@ Keine Garantie – aber mit viel Sorgfalt entwickelt ❤️
 ---
 
 Viel Spaß beim Spielen 🎮
+
