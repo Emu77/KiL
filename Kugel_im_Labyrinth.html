@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+<title>Kugel-Labyrinth Android – Extreme Hard</title>
+
+<style>
+html,body{margin:0;height:100%;background:#000;font-family:system-ui;color:#f3e6d0}
+#wrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px}
+canvas{background:#6b3f24;border:4px solid #1a0f08;border-radius:18px}
+.row{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+button,select{
+  padding:10px 16px;border-radius:999px;border:1px solid #2b1a10;
+  background:#120a06;color:#f3e6d0;font-size:15px
+}
+.chip{font-size:13px;padding:4px 10px;border-radius:999px;border:1px solid #2b1a10;background:rgba(18,10,6,.7)}
+#endScreen{
+  position:fixed;inset:0;background:rgba(0,0,0,.92);
+  display:none;align-items:center;justify-content:center;z-index:10
+}
+#endBox{
+  background:#1a0f08;border:2px solid #6b3f24;border-radius:20px;
+  padding:28px;text-align:center
+}
+#endBox h1{margin:0 0 16px;color:#facc15}
+</style>
+</head>
+
+<body>
+<div id="wrap">
+  <canvas id="game" width="360" height="480"></canvas>
+
+  <div class="row">
+    <select id="difficulty">
+      <option value="easy">Easy</option>
+      <option value="normal" selected>Normal</option>
+      <option value="hard">🔥 Extreme Hard</option>
+    </select>
+    <button id="btnStart">Start</button>
+    <button id="btnRestart">Restart</button>
+  </div>
+
+  <div class="row">
+    <div id="status" class="chip">Bereit</div>
+  </div>
+</div>
+
+<div id="endScreen">
+  <div id="endBox">
+    <h1>🏆 Alle Level geschafft!</h1>
+    <button id="btnAgain">Nochmal von vorne</button>
+  </div>
+</div>
+
+<script>
+(() => {
+
+/* ========= LEVELS ========= */
+const LEVELS=[
+  {cols:7,rows:9,holes:3},
+  {cols:9,rows:11,holes:5},
+  {cols:11,rows:13,holes:7},
+  {cols:13,rows:15,holes:9},
+  {cols:15,rows:17,holes:11}
+];
+let levelIndex=0;
+
+/* ========= DIFFICULTY ========= */
+const DIFF={
+  easy:   {speed:0.16, hole:0.22, power:1.2, suck:0.0},
+  normal: {speed:0.26, hole:0.28, power:1.6, suck:0.0015},
+  hard:   {speed:0.45, hole:0.38, power:2.8, suck:0.006}
+};
+let SPEED=DIFF.normal.speed;
+let HOLE_SCALE=DIFF.normal.hole;
+let DIFF_POWER=DIFF.normal.power;
+let SUCK=DIFF.normal.suck;
+
+/* ========= UI ========= */
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+const W=canvas.width,H=canvas.height;
+const status=document.getElementById("status");
+const btnStart=document.getElementById("btnStart");
+const btnRestart=document.getElementById("btnRestart");
+const btnAgain=document.getElementById("btnAgain");
+const endScreen=document.getElementById("endScreen");
+const selDiff=document.getElementById("difficulty");
+
+/* ========= SOUND ========= */
+let audioCtx=null;
+function initAudio(){
+  if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+}
+function holeSound(){
+  if(!audioCtx)return;
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.frequency.setValueAtTime(180,audioCtx.currentTime);
+  o.frequency.exponentialRampToValueAtTime(35,audioCtx.currentTime+1.1);
+  g.gain.setValueAtTime(1,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+1.1);
+  o.connect(g).connect(audioCtx.destination);
+  o.start();o.stop(audioCtx.currentTime+1.1);
+}
+function winSound(){
+  if(!audioCtx)return;
+  [523,659,784].forEach((f,i)=>{
+    const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+    o.frequency.value=f;g.gain.value=0.45;
+    o.connect(g).connect(audioCtx.destination);
+    o.start(audioCtx.currentTime+i*0.12);
+    o.stop(audioCtx.currentTime+i*0.12+0.35);
+  });
+}
+
+/* ========= SENSOR ========= */
+let beta=0,gamma=0,gyro=false;
+btnStart.onclick=async()=>{
+  initAudio();
+  const d=DIFF[selDiff.value];
+  SPEED=d.speed;HOLE_SCALE=d.hole;DIFF_POWER=d.power;SUCK=d.suck;
+
+  if(DeviceOrientationEvent?.requestPermission){
+    const p=await DeviceOrientationEvent.requestPermission();
+    if(p!=="granted")return;
+  }
+  window.addEventListener("deviceorientation",e=>{
+    beta=e.beta||0;gamma=e.gamma||0;
+  },true);
+  gyro=true;
+  status.textContent=`Level ${levelIndex+1} – ${selDiff.value}`;
+};
+
+/* ========= BALL ========= */
+const ball={x:0,y:0,vx:0,vy:0,r:7};
+const DEAD=2;
+let won=false,resetting=false;
+
+/* ========= MAZE ========= */
+let cols,rows,cell,ox,oy,wall;
+let grid=[],holes=[],goal=null;
+class Cell{constructor(x,y){this.x=x;this.y=y;this.w=[1,1,1,1];this.v=false}}
+const DX=[0,1,0,-1],DY=[-1,0,1,0];
+const idx=(x,y)=>x<0||y<0||x>=cols||y>=rows?-1:x+y*cols;
+
+function genMaze(){
+  grid=[];
+  for(let y=0;y<rows;y++)for(let x=0;x<cols;x++)grid.push(new Cell(x,y));
+  let stack=[],cur=grid[0];cur.v=true;
+  while(true){
+    let n=[];
+    for(let d=0;d<4;d++){
+      const i=idx(cur.x+DX[d],cur.y+DY[d]);
+      if(i>=0&&!grid[i].v)n.push([grid[i],d]);
+    }
+    if(n.length){
+      const[nx,d]=n[Math.random()*n.length|0];
+      cur.w[d]=0;nx.w[(d+2)%4]=0;
+      stack.push(cur);cur=nx;cur.v=true;
+    }else if(stack.length)cur=stack.pop();
+    else break;
+  }
+}
+
+function mainPath(){
+  const s=grid[0],g=grid[cols*rows-1];
+  const q=[s],p=new Map([[s,null]]);
+  while(q.length){
+    const c=q.shift();if(c===g)break;
+    for(let d=0;d<4;d++){
+      if(c.w[d])continue;
+      const n=grid[idx(c.x+DX[d],c.y+DY[d])];
+      if(!p.has(n)){p.set(n,c);q.push(n);}
+    }
+  }
+  const path=[];let cur=g;
+  while(cur){path.unshift(cur);cur=p.get(cur);}
+  return path;
+}
+
+function placeHoles(count){
+  holes=[];
+  const path=mainPath();
+  const set=new Set(path.map(c=>c.x+","+c.y));
+  const step=Math.floor(path.length/(count+1));
+  const r=cell*HOLE_SCALE;
+
+  for(let i=1;i<=count;i++){
+    const b=path[i*step];if(!b)continue;
+    let placed=0;
+    for(let d=0;d<4&&placed<2;d++){
+      const nx=b.x+DX[d],ny=b.y+DY[d],ii=idx(nx,ny);
+      if(ii<0||set.has(nx+","+ny))continue;
+      b.w[d]=0;grid[ii].w[(d+2)%4]=0;
+      holes.push({x:ox+nx*cell+cell/2,y:oy+ny*cell+cell/2,r});
+      placed++;
+    }
+  }
+}
+
+/* ========= COLLISION ========= */
+function seg(x1,y1,x2,y2){
+  const dx=x2-x1,dy=y2-y1,l2=dx*dx+dy*dy||1;
+  let t=((ball.x-x1)*dx+(ball.y-y1)*dy)/l2;
+  t=Math.max(0,Math.min(1,t));
+  const cx=x1+t*dx,cy=y1+t*dy;
+  const d=Math.hypot(ball.x-cx,ball.y-cy);
+  const r=ball.r+wall/2;
+  if(d<r){
+    const nx=(ball.x-cx)/(d||1),ny=(ball.y-cy)/(d||1);
+    ball.x+=nx*(r-d);ball.y+=ny*(r-d);
+  }
+}
+function collide(){
+  for(const c of grid){
+    const x=ox+c.x*cell,y=oy+c.y*cell;
+    if(c.w[0])seg(x,y,x+cell,y);
+    if(c.w[1])seg(x+cell,y,x+cell,y+cell);
+    if(c.w[2])seg(x,y+cell,x+cell,y+cell);
+    if(c.w[3])seg(x,y,x,y+cell);
+  }
+}
+
+/* ========= LEVEL ========= */
+function startLevel(){
+  won=false;resetting=false;endScreen.style.display="none";
+  const L=LEVELS[levelIndex];
+  cols=L.cols;rows=L.rows;
+  const m=20;
+  cell=Math.min((W-m*2)/cols,(H-m*2)/rows)|0;
+  ox=(W-cols*cell)/2;oy=(H-rows*cell)/2;
+  wall=Math.max(5,(cell*0.18)|0);
+  genMaze();placeHoles(L.holes);
+  goal={x:ox+(cols-1)*cell+cell/2,y:oy+(rows-1)*cell+cell/2,r:cell*0.35};
+  ball.x=ox+cell/2;ball.y=oy+cell/2;ball.vx=ball.vy=0;
+  status.textContent=`Level ${levelIndex+1} – ${selDiff.value}`;
+}
+btnRestart.onclick=startLevel;
+btnAgain.onclick=()=>{levelIndex=0;startLevel();};
+startLevel();
+
+/* ========= LOOP ========= */
+function loop(){
+  if(resetting)startLevel();
+
+  if(!won&&gyro){
+    const gx=Math.abs(gamma)>DEAD?gamma:0;
+    const gy=Math.abs(beta)>DEAD?beta:0;
+
+    ball.vx=Math.sign(gx)*Math.pow(Math.abs(gx),DIFF_POWER)*SPEED;
+    ball.vy=Math.sign(gy)*Math.pow(Math.abs(gy),DIFF_POWER)*SPEED;
+  }else ball.vx=ball.vy=0;
+
+  const steps=Math.max(1,Math.ceil(Math.max(Math.abs(ball.vx),Math.abs(ball.vy))));
+  for(let i=0;i<steps;i++){
+    ball.x+=ball.vx/steps;collide();
+    ball.y+=ball.vy/steps;collide();
+  }
+
+  for(const h of holes){
+    const dx=h.x-ball.x,dy=h.y-ball.y;
+    const dist=Math.hypot(dx,dy);
+    if(dist<h.r*2){
+      ball.x+=dx*SUCK;
+      ball.y+=dy*SUCK;
+    }
+    if(dist<ball.r+h.r){
+      holeSound();resetting=true;
+    }
+  }
+
+  if(!won&&Math.hypot(ball.x-goal.x,ball.y-goal.y)<ball.r+goal.r){
+    winSound();won=true;
+    if(levelIndex<LEVELS.length-1){
+      setTimeout(()=>{levelIndex++;startLevel();},700);
+    }else endScreen.style.display="flex";
+  }
+
+  ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle="#3a2214";ctx.lineWidth=wall;
+  ctx.beginPath();
+  for(const c of grid){
+    const x=ox+c.x*cell,y=oy+c.y*cell;
+    if(c.w[0]){ctx.moveTo(x,y);ctx.lineTo(x+cell,y);}
+    if(c.w[1]){ctx.moveTo(x+cell,y);ctx.lineTo(x+cell,y+cell);}
+    if(c.w[2]){ctx.moveTo(x,y+cell);ctx.lineTo(x+cell,y+cell);}
+    if(c.w[3]){ctx.moveTo(x,y);ctx.lineTo(x,y+cell);}
+  }
+  ctx.stroke();
+
+  ctx.fillStyle="#000";
+  holes.forEach(h=>{ctx.beginPath();ctx.arc(h.x,h.y,h.r,0,Math.PI*2);ctx.fill();});
+  ctx.fillStyle="#c1121f";
+  ctx.beginPath();ctx.arc(goal.x,goal.y,goal.r,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle="#f3f4f6";
+  ctx.beginPath();ctx.arc(ball.x,ball.y,ball.r,0,Math.PI*2);ctx.fill();
+
+  requestAnimationFrame(loop);
+}
+loop();
+})();
+</script>
+</body>
+</html>
